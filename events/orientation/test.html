@@ -1,0 +1,10 @@
+<pre id="log"></pre>
+<script>
+function log(s) {
+  document.getElementById("log").innerHTML = s;
+}
+
+window.addEventListener('deviceorientation', function (e) {
+  log(e.gamma + ", " + e.beta + ", " + e.alpha);
+}, false);
+</script>
