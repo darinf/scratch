@@ -15,11 +15,11 @@ function Start() {
 
   var pipe0_buffer = new PipeBuffer();
   pipe0_buffer.initialize(1024);
-  pipe0_writer = new PipeWriter(pipe0_buffer);
+  pipe0_writer = new MessagePipeWriter(pipe0_buffer);
 
   var pipe1_buffer = new PipeBuffer();
   pipe1_buffer.initialize(kCanvasWidth * kCanvasHeight * 4);
-  pipe1_reader = new PipeReader(pipe1_buffer);
+  pipe1_reader = new MessagePipeReader(pipe1_buffer);
 
 	worker = new Worker("worker.js");
 	worker.postMessage(["start", pipe0_buffer.sab, pipe1_buffer.sab]);

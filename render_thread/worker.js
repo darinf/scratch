@@ -14,14 +14,14 @@ onmessage = function(e) {
 
   var pipe0_buffer = new PipeBuffer();
   pipe0_buffer.initializeFromSAB(sab0);
-  var pipe0_reader = new PipeReader(pipe0_buffer);
+  var pipe0_reader = new MessagePipeReader(pipe0_buffer);
 
 	var sab1 = e.data[2];
 	console.log("sab1.byteLength=" + sab1.byteLength);
 
   var pipe1_buffer = new PipeBuffer();
   pipe1_buffer.initializeFromSAB(sab1);
-  var pipe1_writer = new PipeWriter(pipe1_buffer);
+  var pipe1_writer = new MessagePipeWriter(pipe1_buffer);
 
   var image_size = Math.round(Math.sqrt(pipe1_buffer.maxBytes / 4));
   if ((image_size * image_size * 4) != pipe1_buffer.maxBytes)
