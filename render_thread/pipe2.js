@@ -18,7 +18,7 @@
 //
 // Or,
 //
-//   [ XXXXXXX............XXXX ]
+//   [ XXXXXX.............XXXX ]
 //
 // The write-offset is always one index beyond the last element of the used
 // portion of the array. The read-offset indicates the index of the first
@@ -71,6 +71,21 @@ class PipeBuffer {
     return this.sab_.byteLength - PipeBuffer.kHeaderSize;
   }
 
+  hasData() {
+    return Atomics.load(this.int32_, PipeBuffer.kWriteOffset) !=
+           Atomics.load(this.int32_, PipeBuffer.kReadOffset);
+  }
+
+  waitForData() {
+    for (;;) {
+      var writeOffset = Atomics.load(this.int32_, PipeBuffer.kWriteOffset);
+      var readOffset = Atomics.load(this.int32_, PipeBuffer.kReadOffset);
+      if (writeOffset != readOffset)
+        return;
+      Atomics.wait(this.buffer_.int32, PipeBuffer.kWriteOffset, writeOffset);
+    }
+  }
+
   copyBytesOut() {
     // Sample the write offset once. It may advance subsequently, but that's
     // okay as we will only read up to the sampled point.
@@ -86,9 +101,9 @@ class PipeBuffer {
     } else {
       var first_chunk_size = this.maxBytes - readOffset;
       var second_chunk_size = writeOffset;
-      if (first_chunk_size)
+      if (first_chunk_size > 0)
         result.set(new Int8Array(this.sab_, PipeBuffer.kHeaderSize + readOffset, first_chunk_size));
-      if (second_chunk_size)
+      if (second_chunk_size > 0)
         result.set(new Int8Array(this.sab_, PipeBuffer.kHeaderSize, second_chunk_size), first_chunk_size);
     }
 
@@ -99,9 +114,43 @@ class PipeBuffer {
   }
 
   copyBytesIn(bytes) {
-    var int8 = new Int8Array(this.sab_, PipeBuffer.kHeaderSize, bytes.byteLength);
-    int8.set(bytes);
-    this.numBytes = bytes.byteLength;
+    // Sample the read offset once. It may advance subsequently, but that's
+    // okay as we will only write up to the sampled point.
+    var writeOffset = Atomics.load(this.int32_, PipeBuffer.kWriteOffset);
+    var readOffset = Atomics.load(this.int32_, PipeBuffer.kReadOffset);
+
+    var num_bytes = this.computeNumBytes_(writeOffset, readOffset);
+    var bytes_available = this.maxBytes - num_bytes;
+
+    var bytes_to_copy;
+    if (bytes_available < bytes.byteLength) {
+      bytes_to_copy = bytes_available;
+    } else {
+      bytes_to_copy = bytes.byteLength;
+    }
+
+    var int8 = new Int8Array(this.sab_, PipeBuffer.kHeaderSize, this.maxBytes);
+
+    // XXX is there a boundary condition where writing can cause writeOffset to equal readOffset?
+
+    if (readOffset > writeOffset || bytes_to_copy < (this.maxBytes - writeOffset)) {
+      int8.set(bytes, writeOffset);
+      Atomics.store(this.int32_, PipeBuffer.kWriteOffset, writeOffset + bytes_to_copy);
+    } else {
+      var first_chunk_size = this.maxBytes - writeOffset;
+      var second_chunk_size = bytes_to_copy - first_chunk_size;
+
+      if (first_chunk_size > 0)
+        int8.set(new Int8Array(bytes.buffer, bytes.byteOffset, first_chunk_size), writeOffset);
+      if (second_chunk_size > 0)
+        int8.set(new Int8Array(bytes.buffer, bytes.byteOffset + first_chunk_size, second_chunk_size), 0);
+      Atomics.store(this.int32_, PipeBuffer.kWriteOffset, second_chunk_size);
+    }
+
+    // Unblock waitForData().
+    Atomics.wake(this.buffer_.int32, PipeBuffer.kWriteOffset, 1);
+
+    return bytes_to_copy;
   }
 
   computeNumBytes_(writeOffset, readOffset) {
@@ -123,21 +172,13 @@ class PipeReader {
     this.buffer_ = buffer;
   }
   read() {  // returns Int8Array, blocking until available
-    this.waitForNewInput_();
-    var result = this.buffer_.copyBytesOut();
-    this.buffer_.incrementReadCounter();
-    return result;
+    this.buffer_.waitForData();
+    return this.buffer_.copyBytesOut();
   }
   tryRead() {  // returns Int8Array or null
-    if (this.buffer_.writeCounter == this.buffer_.readCounter)
+    if (!this.buffer_.hasData())
       return null;
-    var result = this.buffer_.copyBytesOut();
-    this.buffer_.incrementReadCounter();
-    return result;
-  }
-  waitForNewInput_() {
-    while (this.buffer_.writeCounter == this.buffer_.readCounter)
-      Atomics.wait(this.buffer_.int32, 0, this.buffer_.readCounter);
+    return this.buffer_.copyBytesOut();
   }
 }
 
@@ -146,7 +187,10 @@ class PipeWriter {
     this.buffer_ = buffer;
     this.send_queue_ = new Array();
   }
-  write(bytes) {
+  // XXX consider having both blocking and non-blocking versions of this.
+  write(bytes) {  // Returns number of bytes written.
+    return this.buffer_.copyBytesIn(bytes);
+    /*
     var maxBytes = this.buffer_.maxBytes;
     if (bytes.byteLength > maxBytes) {
       throw "oops: message is too long to send!";
@@ -154,7 +198,9 @@ class PipeWriter {
       this.send_queue_.push(bytes);
     }
     this.doPendingWrites();
+    */
   }
+  /*
   hasPendingWrites() {
     return this.send_queue_.length > 0;
   }
@@ -173,4 +219,5 @@ class PipeWriter {
     Atomics.wake(this.buffer_.int32, 0, 1);
     return true;
   }
+  */
 }
