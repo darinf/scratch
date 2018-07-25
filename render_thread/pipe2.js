@@ -86,6 +86,21 @@ class PipeBuffer {
     }
   }
 
+  hasSpace() {
+    return this.numBytes < (this.maxBytes - 1);
+  }
+
+  waitForSpace() {
+    for (;;) {
+      var writeOffset = Atomics.load(this.int32_, PipeBuffer.kWriteOffset);
+      var readOffset = Atomics.load(this.int32_, PipeBuffer.kReadOffset);
+      var numBytes = this.computeNumBytes_(writeOffset, readOffset);
+      if (numBytes < (this.maxBytes - 1))
+        return;
+      Atomics.wait(this.buffer_.int32, PipeBuffer.kReadOffset, readOffset);
+    }
+  }
+
   copyBytesOut() {
     // Sample the write offset once. It may advance subsequently, but that's
     // okay as we will only read up to the sampled point.
@@ -110,6 +125,9 @@ class PipeBuffer {
     // Now we can set the read offset to the write offset as we have caught up.
     Atomics.store(this.int32_, PipeBuffer.kReadOffset, writeOffset);
 
+    // Unblock waitForSpace().
+    Atomics.wake(this.buffer_.int32, PipeBuffer.kReadOffset, 1);
+
     return result;
   }
 
@@ -120,7 +138,10 @@ class PipeBuffer {
     var readOffset = Atomics.load(this.int32_, PipeBuffer.kReadOffset);
 
     var num_bytes = this.computeNumBytes_(writeOffset, readOffset);
-    var bytes_available = this.maxBytes - num_bytes;
+
+    // Subtract one to ensure that the write-offset never advances to equal the
+    // read-offset.
+    var bytes_available = this.maxBytes - num_bytes - 1;
 
     var bytes_to_copy;
     if (bytes_available < bytes.byteLength) {
@@ -130,8 +151,6 @@ class PipeBuffer {
     }
 
     var int8 = new Int8Array(this.sab_, PipeBuffer.kHeaderSize, this.maxBytes);
-
-    // XXX is there a boundary condition where writing can cause writeOffset to equal readOffset?
 
     if (readOffset > writeOffset || bytes_to_copy < (this.maxBytes - writeOffset)) {
       int8.set(bytes, writeOffset);
@@ -154,11 +173,11 @@ class PipeBuffer {
   }
 
   computeNumBytes_(writeOffset, readOffset) {
-    if (writeOffset > readOffset)
+    if (writeOffset >= readOffset)
       return writeOffset - readOffset;
 
     // Wrap around case.
-    return (maxBytes - readOffset) + writeOffset;
+    return (this.maxBytes - readOffset) + writeOffset;
   }
 }
 PipeBuffer.kHeaderSize =
@@ -185,39 +204,19 @@ class PipeReader {
 class PipeWriter {
   constructor(buffer) {
     this.buffer_ = buffer;
-    this.send_queue_ = new Array();
   }
-  // XXX consider having both blocking and non-blocking versions of this.
-  write(bytes) {  // Returns number of bytes written.
+  write(bytes) {  // Blocks until fully written.
+    for (;;) {
+      var bytes_written = this.tryWrite(bytes);
+      if (bytes_written == bytes.byteLength)
+        return;
+      var offset = bytes.byteOffset + bytes_written;
+      var length = bytes.byteLength - bytes_written;
+      bytes = new Int8Array(bytes.buffer, offset, length);
+      this.buffer_.waitForSpace();
+    }
+  }
+  tryWrite(bytes) {  // Returns number of bytes written.
     return this.buffer_.copyBytesIn(bytes);
-    /*
-    var maxBytes = this.buffer_.maxBytes;
-    if (bytes.byteLength > maxBytes) {
-      throw "oops: message is too long to send!";
-    } else {
-      this.send_queue_.push(bytes);
-    }
-    this.doPendingWrites();
-    */
   }
-  /*
-  hasPendingWrites() {
-    return this.send_queue_.length > 0;
-  }
-  doPendingWrites() {
-    while (this.hasPendingWrites()) {
-      if (!this.trySendNext_())
-        break;
-    }
-  }
-  trySendNext_() {
-    if (this.buffer_.writeCounter != this.buffer_.readCounter)
-      return false;  // Waiting for reader
-    var bytes = this.send_queue_.pop();
-    this.buffer_.copyBytesIn(bytes);
-    this.buffer_.incrementWriteCounter();
-    Atomics.wake(this.buffer_.int32, 0, 1);
-    return true;
-  }
-  */
 }
