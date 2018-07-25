@@ -72,6 +72,10 @@ class PipeBuffer {
     return this.numBytes < this.maxBytes;
   }
 
+  spaceAvailable() {
+    return this.maxBytes - this.numBytes;
+  }
+
   waitForSpace() {
     for (;;) {
       var writeOffset = Atomics.load(this.int32_, PipeBuffer.kWriteOffset);
@@ -185,6 +189,9 @@ class PipeReader {
       return null;
     return this.buffer_.copyBytesOut();
   }
+  bytesAvailable() {
+    return this.numBytes;
+  }
 }
 
 class PipeWriter {
@@ -204,5 +211,111 @@ class PipeWriter {
   }
   tryWrite(bytes) {  // Returns number of bytes written.
     return this.buffer_.copyBytesIn(bytes);
+  }
+  spaceAvailable() {
+    return this.buffer_.spaceAvailable();
+  }
+}
+
+// MessagePipe{Reader,Writer} helps with sending framed messages.
+
+class MessagePipeReader {
+  constructor(buffer) {
+    this.reader_ = new PipeReader(buffer);
+    this.messages_ = new Array();
+    this.partial_ = null;
+  }
+
+  read() {  // returns Int8Array, blocking until available
+    if (this.messages_.length > 0)
+      return this.messages_.shift();
+
+    var result;
+    for (;;) {
+      var int8 = this.reader_.read();
+
+      this.ingest_(int8);
+
+      if (this.messages_.length > 0) {
+        result = this.messages_.shift();
+        break;
+      }
+    }
+    return result;
+  }
+
+  tryRead() {  // returns Int8Array or null
+    if (this.messages_.length > 0)
+      return this.messages_.shift();
+
+    var int8 = this.reader_.tryRead();
+    if (!int8)
+      return null;
+
+    this.ingest_(int8);
+
+    if (this.messages_.length > 0)
+      return this.messages_.shift();
+
+    return null;
+  }
+
+  ingest_(input) {
+    var int8;
+    if (this.partial_) {
+      int8 = new Int8Array(input.byteLength + this.partial_.byteLength);
+      int8.set(this.partial_);
+      int8.set(input, this.partial_.byteLength);
+      this.partial_ = null;
+    } else {
+      int8 = input;
+    }
+
+    var next_offset = 0;
+    for (;;) {
+      if ((int8.byteLength - next_offset) < 4)
+        break;
+
+      var buf = new Int8Array(4);
+      buf.set(new Int8Array(int8.buffer, int8.byteOffset + next_offset, 4));
+      var int32 = new Int32Array(buf.buffer);
+
+      var message_size = int32[0];
+
+      if ((int8.byteLength - next_offset - 4) < message_size)
+        break;
+
+      var message = new Int8Array(int8.buffer, int8.byteOffset + next_offset + 4, message_size);
+      this.messages_.push(message);
+
+      next_offset += (4 + message_size);
+    }
+
+    this.partial_ = new Int8Array(int8.buffer, int8.byteOffset + next_offset);
+  }
+}
+
+class MessagePipeWriter {
+  constructor(buffer) {
+    this.writer_ = new PipeWriter(buffer);
+  }
+
+  write(bytes) {  // Blocks until fully written.
+    var int32 = new Int32Array(1);
+    int32[0] = bytes.byteLength;
+    this.writer_.write(new Int8Array(int32.buffer));
+    this.writer_.write(bytes);
+  }
+
+  tryWrite(bytes) {  // Returns true iff message was written.
+    if (this.writer_.spaceAvailable() < (4 + bytes.byteLength))
+      return false;
+    var int32 = new Int32Array(1);
+    int32[0] = bytes.byteLength;
+    if (this.writer_.tryWrite(new Int8Array(int32.buffer)) != 4)
+      throw "oops";
+    if (this.writer_.tryWrite(bytes) != bytes.byteLength)
+      throw "oops";
+    return true;
   }
 }
