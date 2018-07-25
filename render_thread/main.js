@@ -29,11 +29,11 @@ function Start() {
 
 function SendData(bytes) {
   //console.log("sending: " + bytes.toString());
-  pipe0_writer.write(bytes);
+  pipe0_writer.tryWrite(bytes);
 }
 
 function RenderFrame() {
-  pipe0_writer.doPendingWrites();
+  //XXX pipe0_writer.doPendingWrites();
 
   var int8 = pipe1_reader.tryRead();
   if (int8) {

@@ -1,4 +1,4 @@
-importScripts("pipe.js");
+importScripts("pipe2.js");
 
 function sleep(msec) {
   var sab = new SharedArrayBuffer(4);

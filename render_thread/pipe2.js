@@ -29,46 +29,28 @@ class PipeBuffer {
     this.sab_ = null;
     this.int32_ = null;
   }
+
   initializeFromSAB(sab) {
     this.sab_ = sab;
     this.int32_ = new Int32Array(this.sab_);
   }
+
   initialize(size) {
-    this.initializeFromSAB(new SharedArrayBuffer(PipeBuffer.kHeaderSize + size));
+    this.initializeFromSAB(new SharedArrayBuffer(PipeBuffer.kHeaderSize + size + 4));
   }
+
   get sab() {
     return this.sab_;
   }
-  /*
-  get int32() {
-    return this.int32_;
-  }
-  get writeOffset() { 
-    return Atomics.load(this.int32_, PipeBuffer.kWriteOffset);
-  }
-  incrementWriteOffset() {
-    Atomics.add(this.int32_, 0, 1);
-  }
-  get readOffset() { 
-    return Atomics.load(this.int32_, PipeBuffer.kReadOffset);
-  }
-  incrementReadCounter() {
-    Atomics.add(this.int32_, 1, 1);
-  }
-  */
+
   get numBytes() { 
     return this.computeNumBytes_(
         Atomics.load(this.int32_, PipeBuffer.kWriteOffset),
         Atomics.load(this.int32_, PipeBuffer.kReadOffset));
   }
-  /*
-  set numBytes(value) {
-    Atomics.store(this.int32_, 2, value);
-  }
-  */
 
   get maxBytes() {
-    return this.sab_.byteLength - PipeBuffer.kHeaderSize;
+    return this.sab_.byteLength - PipeBuffer.kHeaderSize - 4;
   }
 
   hasData() {
@@ -82,12 +64,12 @@ class PipeBuffer {
       var readOffset = Atomics.load(this.int32_, PipeBuffer.kReadOffset);
       if (writeOffset != readOffset)
         return;
-      Atomics.wait(this.buffer_.int32, PipeBuffer.kWriteOffset, writeOffset);
+      Atomics.wait(this.int32_, PipeBuffer.kWriteOffset, writeOffset);
     }
   }
 
   hasSpace() {
-    return this.numBytes < (this.maxBytes - 1);
+    return this.numBytes < this.maxBytes;
   }
 
   waitForSpace() {
@@ -95,9 +77,9 @@ class PipeBuffer {
       var writeOffset = Atomics.load(this.int32_, PipeBuffer.kWriteOffset);
       var readOffset = Atomics.load(this.int32_, PipeBuffer.kReadOffset);
       var numBytes = this.computeNumBytes_(writeOffset, readOffset);
-      if (numBytes < (this.maxBytes - 1))
+      if (numBytes < this.maxBytes)
         return;
-      Atomics.wait(this.buffer_.int32, PipeBuffer.kReadOffset, readOffset);
+      Atomics.wait(this.int32_, PipeBuffer.kReadOffset, readOffset);
     }
   }
 
@@ -114,7 +96,7 @@ class PipeBuffer {
     if (writeOffset > readOffset) {
       result.set(new Int8Array(this.sab_, PipeBuffer.kHeaderSize + readOffset, num_bytes));
     } else {
-      var first_chunk_size = this.maxBytes - readOffset;
+      var first_chunk_size = this.endOffset_ - readOffset;
       var second_chunk_size = writeOffset;
       if (first_chunk_size > 0)
         result.set(new Int8Array(this.sab_, PipeBuffer.kHeaderSize + readOffset, first_chunk_size));
@@ -126,7 +108,7 @@ class PipeBuffer {
     Atomics.store(this.int32_, PipeBuffer.kReadOffset, writeOffset);
 
     // Unblock waitForSpace().
-    Atomics.wake(this.buffer_.int32, PipeBuffer.kReadOffset, 1);
+    Atomics.wake(this.int32_, PipeBuffer.kReadOffset, 1);
 
     return result;
   }
@@ -139,9 +121,9 @@ class PipeBuffer {
 
     var num_bytes = this.computeNumBytes_(writeOffset, readOffset);
 
-    // Subtract one to ensure that the write-offset never advances to equal the
+    // The -1 here is to prevent write-offset from being incremented to equal
     // read-offset.
-    var bytes_available = this.maxBytes - num_bytes - 1;
+    var bytes_available = this.endOffset_ - num_bytes - 1;
 
     var bytes_to_copy;
     if (bytes_available < bytes.byteLength) {
@@ -150,13 +132,13 @@ class PipeBuffer {
       bytes_to_copy = bytes.byteLength;
     }
 
-    var int8 = new Int8Array(this.sab_, PipeBuffer.kHeaderSize, this.maxBytes);
+    var int8 = new Int8Array(this.sab_, PipeBuffer.kHeaderSize, this.endOffset_);
 
-    if (readOffset > writeOffset || bytes_to_copy < (this.maxBytes - writeOffset)) {
+    if (readOffset > writeOffset || bytes_to_copy < (this.endOffset_ - writeOffset)) {
       int8.set(bytes, writeOffset);
       Atomics.store(this.int32_, PipeBuffer.kWriteOffset, writeOffset + bytes_to_copy);
     } else {
-      var first_chunk_size = this.maxBytes - writeOffset;
+      var first_chunk_size = this.endOffset_ - writeOffset;
       var second_chunk_size = bytes_to_copy - first_chunk_size;
 
       if (first_chunk_size > 0)
@@ -167,9 +149,13 @@ class PipeBuffer {
     }
 
     // Unblock waitForData().
-    Atomics.wake(this.buffer_.int32, PipeBuffer.kWriteOffset, 1);
+    Atomics.wake(this.int32_, PipeBuffer.kWriteOffset, 1);
 
     return bytes_to_copy;
+  }
+
+  get endOffset_() {
+    return this.sab_.byteLength - PipeBuffer.kHeaderSize;
   }
 
   computeNumBytes_(writeOffset, readOffset) {
@@ -177,7 +163,7 @@ class PipeBuffer {
       return writeOffset - readOffset;
 
     // Wrap around case.
-    return (this.maxBytes - readOffset) + writeOffset;
+    return (this.endOffset_ - readOffset) + writeOffset;
   }
 }
 PipeBuffer.kHeaderSize =
