@@ -278,10 +278,7 @@ class MessagePipeReader {
       if ((int8.byteLength - next_offset) < 4)
         break;
 
-      var buf = new Int8Array(4);
-      buf.set(new Int8Array(int8.buffer, int8.byteOffset + next_offset, 4));
-      var int32 = new Int32Array(buf.buffer);
-
+      var int32 = new Int32Array(int8.buffer, int8.byteOffset + next_offset, 1);
       var message_size = int32[0];
       var aligned_message_size = this.computeAlignedLength_(message_size);
 
